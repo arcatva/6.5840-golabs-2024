@@ -37,11 +37,17 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 func (c *Coordinator) CallMapTask(args *MapTaskRequest, reply *MapTaskReceive) error {
 	c.callMapTaskLock.Lock()
 
-	file := c.pendingFiles[len(c.pendingFiles)-1]
-	c.pendingFiles = c.pendingFiles[0 : len(c.pendingFiles)-1]
-	c.files[file] = working
-	reply.FileName = file
-	c.callMapTaskLock.Unlock()
+	if len(c.pendingFiles) != 0 {
+		file := c.pendingFiles[len(c.pendingFiles)-1]
+		c.pendingFiles = c.pendingFiles[0 : len(c.pendingFiles)-1]
+		c.files[file] = working
+		reply.FileName = file
+		c.callMapTaskLock.Unlock()
+	} else {
+
+		reply.FileName = ""
+		c.callMapTaskLock.Unlock()
+	}
 
 	return nil
 }

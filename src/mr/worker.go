@@ -2,9 +2,13 @@ package mr
 
 import (
 	"fmt"
+	"github.com/goombaio/namegenerator"
 	"hash/fnv"
+	"io"
 	"log"
 	"net/rpc"
+	"os"
+	"time"
 )
 
 // Map functions return a slice of KeyValue.
@@ -26,7 +30,28 @@ func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
 	// Your worker implementation here.
-	CallCoordinator()
+	workerName := namegenerator.NewNameGenerator(time.Now().UTC().UnixNano()).Generate()
+
+	for fileName := CallCoordinator(workerName); fileName != ""; fileName = CallCoordinator(workerName) {
+		fmt.Println(fileName)
+		intermediate := []KeyValue{}
+		file, err := os.Open(fileName)
+		if err != nil {
+			log.Fatalf("cannot open %v", fileName)
+		}
+		content, err := io.ReadAll(file)
+		if err != nil {
+			log.Fatalf("cannot read %v", fileName)
+		}
+		err = file.Close()
+		if err != nil {
+			log.Fatalf("cannot close %v", fileName)
+		}
+		kva := mapf(fileName, string(content))
+		intermediate = append(intermediate, kva...)
+		time.Sleep(5 * time.Second)
+	}
+
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
 
@@ -36,15 +61,15 @@ func Worker(mapf func(string, string) []KeyValue,
 //
 // the RPC argument and reply types are defined in rpc.go.
 
-func CallCoordinator() string {
+func CallCoordinator(workerName string) string {
 	arg := MapTaskRequest{}
-	arg.WorkerName = "aa"
+	arg.WorkerName = workerName
 	reply := MapTaskReceive{}
 	ok := call("Coordinator.CallMapTask", &arg, &reply)
 	if ok {
 		return reply.FileName
 	} else {
-		return error
+		return ""
 	}
 }
 
