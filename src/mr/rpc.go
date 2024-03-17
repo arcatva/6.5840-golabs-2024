@@ -25,10 +25,21 @@ type ExampleReply struct {
 }
 
 // Add your RPC definitions here.
-type MapTaskRequest struct {
+type TaskRequest struct {
 	WorkerName string
 }
-type MapTaskReceive struct {
+type TaskReceive struct {
+	CoordinatorPhase coordinatorPhase
+	*MapTask
+	*ReduceTask
+}
+
+type MapTask struct {
+	FileName  string
+	FileOrder int
+	NReduce   int
+}
+type ReduceTask struct {
 	FileName string
 }
 

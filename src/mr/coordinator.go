@@ -9,19 +9,20 @@ import (
 	"sync"
 )
 
-type fileStatus int
+type coordinatorPhase int
 
 const (
-	pending fileStatus = iota
-	working
-	finished
+	mapping coordinatorPhase = iota
+	reducing
 )
 
 type Coordinator struct {
 	// Your definitions here.
-	files           map[string]fileStatus
-	pendingFiles    []string
-	callMapTaskLock sync.Mutex
+	mappingQueue  []string
+	reducingQueue []string
+	coordinatorPhase
+	nReduce      int
+	callTaskLock sync.Mutex
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -34,22 +35,41 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	return nil
 }
 
-func (c *Coordinator) CallMapTask(args *MapTaskRequest, reply *MapTaskReceive) error {
-	c.callMapTaskLock.Lock()
+func (c *Coordinator) CallTask(args *TaskRequest, reply *TaskReceive) error {
+	c.callTaskLock.Lock()
+	log.Printf("Calling from %s in %v mode", args.WorkerName, c.coordinatorPhase)
+	reply.CoordinatorPhase = c.coordinatorPhase
 
-	if len(c.pendingFiles) != 0 {
-		file := c.pendingFiles[len(c.pendingFiles)-1]
-		c.pendingFiles = c.pendingFiles[0 : len(c.pendingFiles)-1]
-		c.files[file] = working
-		reply.FileName = file
-		c.callMapTaskLock.Unlock()
-	} else {
-
-		reply.FileName = ""
-		c.callMapTaskLock.Unlock()
+	switch c.coordinatorPhase {
+	case mapping:
+		reply.MapTask = c.provideMapTask()
+		break
+	case reducing:
+		reply.ReduceTask = c.provideReduceTask()
+		break
 	}
-
+	c.callTaskLock.Unlock()
 	return nil
+}
+
+func (c *Coordinator) provideMapTask() *MapTask {
+	file := c.mappingQueue[len(c.mappingQueue)-1]
+	fileOrder := len(c.mappingQueue) - 1
+	c.mappingQueue = c.mappingQueue[0 : len(c.mappingQueue)-1]
+
+	if len(c.mappingQueue) == 0 {
+		c.coordinatorPhase = reducing
+		log.Println("Entering reducing phase")
+	}
+	log.Printf("Remain %v in queue", len(c.mappingQueue))
+	return &MapTask{
+		FileName:  file,
+		FileOrder: fileOrder,
+		NReduce:   c.nReduce,
+	}
+}
+func (c *Coordinator) provideReduceTask() *ReduceTask {
+	return &ReduceTask{}
 }
 
 // start a thread that listens for RPCs from worker.go
@@ -83,11 +103,12 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
 	// Your code here.
-	c.files = make(map[string]fileStatus)
-	c.pendingFiles = make([]string, len(files))
+	c.mappingQueue = make([]string, len(files))
+	c.reducingQueue = make([]string, len(files))
+	c.coordinatorPhase = mapping
+	c.nReduce = nReduce
 	for i, fileName := range files {
-		c.pendingFiles[i] = fileName
-		c.files[fileName] = pending
+		c.mappingQueue[i] = fileName
 	}
 	c.server()
 	return &c
