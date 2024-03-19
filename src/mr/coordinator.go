@@ -8,6 +8,7 @@ import (
 	"net/rpc"
 	"os"
 	"sync"
+	"time"
 )
 
 type CoordinatorPhase int
@@ -42,6 +43,8 @@ type Coordinator struct {
 	nMap         int
 	nReduce      int
 	sendTaskLock sync.Mutex
+	waitingStart time.Time
+	waitingEnd   time.Time
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -64,31 +67,59 @@ func (c *Coordinator) SendTask(args *TaskRequest, reply *TaskReceive) error {
 		reply.MapTask = c.provideMapTask()
 	case REDUCING:
 		reply.ReduceTask = c.provideReduceTask()
+	case WAITING:
+		if c.waitingStart.IsZero() {
+			c.waitingStart = time.Now()
+		} else {
+			c.waitingEnd = time.Now()
+			duration := c.waitingEnd.Sub(c.waitingStart)
+			if duration > 3*time.Second {
+				fmt.Println("timeout more than 3 seconds")
+				missing := c.checkUnfinished()
+				c.mapTasksPending = append(c.mapTasksPending, missing)
+				c.CoordinatorPhase = MAPPING
+			} else {
+				fmt.Println("timeout less than 3 seconds")
+			}
+			time.Sleep(1 * time.Second)
+		}
 	}
 	c.sendTaskLock.Unlock()
 	return nil
 }
 
-func (c *Coordinator) ReceiveResult(arg *ResultSendBack, reply *ResultAcknowledge) error {
+func (c *Coordinator) checkUnfinished() string {
+	temp := make(map[string]bool)
 
+	for _, v := range c.mapTasksFinished {
+		temp[v] = true
+	}
+	var missing string
+	for _, v := range c.mapTasks {
+		if !temp[v] {
+			log.Printf("missing %s in finished queue \n", v)
+			missing = v
+		}
+	}
+	return missing
+}
+
+func (c *Coordinator) ReceiveResult(arg *ResultSendBack, reply *ResultAcknowledge) error {
 	switch arg.WorkType {
 	case MAPWORK:
 		c.mapTasksFinished = append(c.mapTasksFinished, c.mapTasks[arg.FileId])
 	case REDUCEWORK:
 		c.reduceTasksFinishedCounter += 1
 	}
-
 	reply.Result = &Result{
 		arg.Result.WorkerName,
 		arg.Result.WorkType,
 		DONE,
 		arg.FileId,
 	}
-
 	if len(c.mapTasksFinished) == c.nMap {
 		c.CoordinatorPhase = REDUCING
 	}
-
 	if c.reduceTasksFinishedCounter == c.nReduce {
 		c.CoordinatorPhase = FINISHING
 	}
@@ -112,7 +143,6 @@ func (c *Coordinator) provideMapTask() *MapTask {
 	}
 }
 func (c *Coordinator) provideReduceTask() *ReduceTask {
-
 	fileID := c.reduceTasksPendingCounter - 1
 	c.reduceTasksPendingCounter -= 1
 	var fileNames []string
@@ -121,7 +151,6 @@ func (c *Coordinator) provideReduceTask() *ReduceTask {
 		// log.Printf("Providing reduce tasks for intermediate files: %s \n", fileName)
 		fileNames = append(fileNames, fileName)
 	}
-
 	return &ReduceTask{
 		fileNames,
 		fileID,
