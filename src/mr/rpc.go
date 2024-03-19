@@ -29,18 +29,49 @@ type TaskRequest struct {
 	WorkerName string
 }
 type TaskReceive struct {
-	CoordinatorPhase coordinatorPhase
+	CoordinatorPhase CoordinatorPhase
 	*MapTask
 	*ReduceTask
 }
 
+type WorkType int
+
+const (
+	MAPWORK WorkType = iota
+	REDUCEWORK
+)
+
+type WorkStatus int
+
+const (
+	PENDING WorkStatus = iota
+	ONGOING
+	DONE
+)
+
+type Result struct {
+	WorkerName string
+	WorkType
+	WorkStatus
+	FileId int
+}
+
+type ResultSendBack struct {
+	*Result
+}
+
+type ResultAcknowledge struct {
+	*Result
+}
+
 type MapTask struct {
-	FileName  string
-	FileOrder int
-	NReduce   int
+	FileName string
+	FileId   int
+	NReduce  int
 }
 type ReduceTask struct {
-	FileName string
+	FileNames []string
+	FileId    int
 }
 
 // Cook up a unique-ish UNIX-domain socket name

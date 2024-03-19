@@ -3,13 +3,15 @@ package mr
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/goombaio/namegenerator"
 	"hash/fnv"
 	"io"
 	"log"
 	"net/rpc"
 	"os"
+	"sort"
 	"time"
+
+	"github.com/goombaio/namegenerator"
 )
 
 // Map functions return a slice of KeyValue.
@@ -31,7 +33,6 @@ func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key } // for sorting
 func ihash(key string) int {
 	h := fnv.New32a()
 	h.Write([]byte(key))
-	log.Printf("ihash s%v \n", int(h.Sum32()&0x7fffffff))
 	return int(h.Sum32() & 0x7fffffff)
 }
 
@@ -41,16 +42,51 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	// Your worker implementation here.
 	workerName := namegenerator.NewNameGenerator(time.Now().UTC().UnixNano()).Generate()
-	task := CallCoordinator(workerName)
-	if a, ok := task.(*MapTask); ok {
-		log.Println("Receiving map task...")
-		log.Println(a.FileName)
-		doMap(mapf, a)
-		return
+
+	task := RequestTask(workerName)
+Request:
+	for task != nil {
+		fmt.Println(task)
+		switch task.CoordinatorPhase {
+		case WAITING:
+			time.Sleep(1 * time.Second)
+			log.Println("Sleeping as worker in waiting stage")
+			task = RequestTask(workerName)
+			continue Request
+		case MAPPING:
+			log.Println("Receiving map task...")
+			//	log.Println(task.MapTask.FileName)
+			doMap(mapf, task.MapTask)
+			SendResult(Result{
+				workerName, MAPWORK, DONE, task.MapTask.FileId,
+			})
+			task = RequestTask(workerName)
+			continue Request
+		case REDUCING:
+			/*		for _, v := range task.ReduceTask.FileNames {
+					log.Printf("Receiving reduce task %s", v)
+				}*/
+			doReduce(reducef, task.ReduceTask)
+			SendResult(Result{
+				workerName, REDUCEWORK, DONE, task.ReduceTask.FileId,
+			})
+			task = RequestTask(workerName)
+			continue Request
+		case FINISHING:
+			break Request
+		}
+
 	}
 
-	if _, ok := task.(*ReduceTask); ok {
-		log.Println("Receiving reduce task...")
+}
+
+func SendResult(result Result) {
+
+	arg := ResultSendBack{&result}
+	reply := ResultAcknowledge{}
+	ok := call("Coordinator.ReceiveResult", &arg, &reply)
+	if !ok {
+		log.Fatal("")
 	}
 
 }
@@ -74,16 +110,9 @@ func doMap(mapf func(string, string) []KeyValue, task *MapTask) {
 	kva := mapf(task.FileName, string(content))
 
 	// create temp files
-	if err := os.Mkdir("tmp", 0750); err != nil {
-		log.Fatalf("cannot create tmp folder")
-	}
-	if err := os.Chdir("tmp"); err != nil {
-		log.Fatalf("cannot cd tmp folder")
-	}
-
 	for i := 0; i < task.NReduce; i++ {
-		intermediateFileName := fmt.Sprintf("mr-%v-%v", task.FileOrder, i)
-		log.Printf("creating file %v", intermediateFileName)
+		intermediateFileName := fmt.Sprintf("mr-%v-%v", task.FileId, i)
+		//	log.Printf("creating file %v", intermediateFileName)
 		f, err := os.Create(intermediateFileName)
 		if err != nil {
 			log.Fatalf("cannot create %s", intermediateFileName)
@@ -96,7 +125,7 @@ func doMap(mapf func(string, string) []KeyValue, task *MapTask) {
 	// save in intermediate files
 	for _, kv := range kva {
 		partitionNumber := ihash(kv.Key) % task.NReduce
-		targetFileName := fmt.Sprintf("mr-%v-%v", task.FileOrder, partitionNumber)
+		targetFileName := fmt.Sprintf("mr-%v-%v", task.FileId, partitionNumber)
 		intermediateFile, err := os.OpenFile(targetFileName, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
 		if err != nil {
 			log.Fatalf("cannot open %s", targetFileName)
@@ -106,30 +135,65 @@ func doMap(mapf func(string, string) []KeyValue, task *MapTask) {
 			log.Fatalf("cannot write %s in %s", kv, targetFileName)
 		}
 	}
+}
 
+func doReduce(reducef func(string, []string) string, task *ReduceTask) {
+
+	var intermediate []KeyValue
+	for _, v := range task.FileNames {
+		file, err := os.Open(v)
+		if err != nil {
+			log.Fatalln(err)
+		}
+		dec := json.NewDecoder(file)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
+			}
+			intermediate = append(intermediate, kv)
+		}
+		file.Close()
+	}
+	sort.Sort(ByKey(intermediate))
+	oname := fmt.Sprintf("mr-out-%v", task.FileId)
+	ofile, _ := os.Create(oname)
+	i := 0
+	for i < len(intermediate) {
+		j := i + 1
+		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, intermediate[k].Value)
+		}
+		output := reducef(intermediate[i].Key, values)
+
+		// this is the correct format for each line of Reduce output.
+		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
+
+		i = j
+	}
+
+	ofile.Close()
+
+}
+
+func RequestTask(workerName string) (task *TaskReceive) {
+	arg := TaskRequest{workerName}
+	reply := TaskReceive{}
+	ok := call("Coordinator.SendTask", &arg, &reply)
+	if !ok {
+		return nil
+	}
+	log.Printf("Coordinator in %v mode", reply.CoordinatorPhase)
+	return &reply
 }
 
 // example function to show how to make an RPC call to the coordinator.
 //
 // the RPC argument and reply types are defined in rpc.go.
-
-func CallCoordinator(workerName string) interface{} {
-	arg := TaskRequest{workerName}
-	reply := TaskReceive{}
-	ok := call("Coordinator.CallTask", &arg, &reply)
-	if !ok {
-		return nil
-	}
-	log.Printf("Coordinator in %v mode", reply.CoordinatorPhase)
-	switch reply.CoordinatorPhase {
-	case mapping:
-		return reply.MapTask
-	case reducing:
-		return reply.ReduceTask
-	}
-	return nil
-}
-
 func CallExample() {
 
 	// declare an argument structure.

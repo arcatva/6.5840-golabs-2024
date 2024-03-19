@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -9,20 +10,38 @@ import (
 	"sync"
 )
 
-type coordinatorPhase int
+type CoordinatorPhase int
 
 const (
-	mapping coordinatorPhase = iota
-	reducing
+	MAPPING CoordinatorPhase = iota
+	WAITING
+	REDUCING
+	FINISHING
 )
+
+type workerRole int
+
+const (
+	MAPPER workerRole = iota
+	REDUCER
+)
+
+type Mapper struct {
+}
 
 type Coordinator struct {
 	// Your definitions here.
-	mappingQueue  []string
-	reducingQueue []string
-	coordinatorPhase
+
+	mapTasks                   map[int]string
+	mapTasksPending            []string
+	mapTasksFinished           []string
+	reduceTasksPendingCounter  int
+	reduceTasksFinishedCounter int
+	workerLists                []string
+	CoordinatorPhase
+	nMap         int
 	nReduce      int
-	callTaskLock sync.Mutex
+	sendTaskLock sync.Mutex
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -35,41 +54,78 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	return nil
 }
 
-func (c *Coordinator) CallTask(args *TaskRequest, reply *TaskReceive) error {
-	c.callTaskLock.Lock()
-	log.Printf("Calling from %s in %v mode", args.WorkerName, c.coordinatorPhase)
-	reply.CoordinatorPhase = c.coordinatorPhase
+func (c *Coordinator) SendTask(args *TaskRequest, reply *TaskReceive) error {
+	c.sendTaskLock.Lock()
+	//	log.Printf("Calling from %s in %v mode \n", args.WorkerName, c.CoordinatorPhase)
+	reply.CoordinatorPhase = c.CoordinatorPhase
 
-	switch c.coordinatorPhase {
-	case mapping:
+	switch c.CoordinatorPhase {
+	case MAPPING:
 		reply.MapTask = c.provideMapTask()
-		break
-	case reducing:
+	case REDUCING:
 		reply.ReduceTask = c.provideReduceTask()
-		break
 	}
-	c.callTaskLock.Unlock()
+	c.sendTaskLock.Unlock()
+	return nil
+}
+
+func (c *Coordinator) ReceiveResult(arg *ResultSendBack, reply *ResultAcknowledge) error {
+
+	switch arg.WorkType {
+	case MAPWORK:
+		c.mapTasksFinished = append(c.mapTasksFinished, c.mapTasks[arg.FileId])
+	case REDUCEWORK:
+		c.reduceTasksFinishedCounter += 1
+	}
+
+	reply.Result = &Result{
+		arg.Result.WorkerName,
+		arg.Result.WorkType,
+		DONE,
+		arg.FileId,
+	}
+
+	if len(c.mapTasksFinished) == c.nMap {
+		c.CoordinatorPhase = REDUCING
+	}
+
+	if c.reduceTasksFinishedCounter == c.nReduce {
+		c.CoordinatorPhase = FINISHING
+	}
 	return nil
 }
 
 func (c *Coordinator) provideMapTask() *MapTask {
-	file := c.mappingQueue[len(c.mappingQueue)-1]
-	fileOrder := len(c.mappingQueue) - 1
-	c.mappingQueue = c.mappingQueue[0 : len(c.mappingQueue)-1]
+	file := c.mapTasksPending[len(c.mapTasksPending)-1]
+	fileId := len(c.mapTasksPending) - 1
+	c.mapTasksPending = c.mapTasksPending[0 : len(c.mapTasksPending)-1]
 
-	if len(c.mappingQueue) == 0 {
-		c.coordinatorPhase = reducing
-		log.Println("Entering reducing phase")
+	if len(c.mapTasksPending) == 0 {
+		c.CoordinatorPhase = WAITING
+		log.Println("Entering waiting phase")
 	}
-	log.Printf("Remain %v in queue", len(c.mappingQueue))
+	log.Printf("Remain %v in queue", len(c.mapTasksPending))
 	return &MapTask{
-		FileName:  file,
-		FileOrder: fileOrder,
-		NReduce:   c.nReduce,
+		FileName: file,
+		FileId:   fileId,
+		NReduce:  c.nReduce,
 	}
 }
 func (c *Coordinator) provideReduceTask() *ReduceTask {
-	return &ReduceTask{}
+
+	fileID := c.reduceTasksPendingCounter - 1
+	c.reduceTasksPendingCounter -= 1
+	var fileNames []string
+	for i, _ := range c.mapTasksFinished {
+		fileName := fmt.Sprintf("mr-%v-%v", i, fileID)
+		// log.Printf("Providing reduce tasks for intermediate files: %s \n", fileName)
+		fileNames = append(fileNames, fileName)
+	}
+
+	return &ReduceTask{
+		fileNames,
+		fileID,
+	}
 }
 
 // start a thread that listens for RPCs from worker.go
@@ -89,11 +145,10 @@ func (c *Coordinator) server() {
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
-	ret := false
 
 	// Your code here.
 
-	return ret
+	return c.CoordinatorPhase == FINISHING
 }
 
 // create a Coordinator.
@@ -103,12 +158,16 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
 	// Your code here.
-	c.mappingQueue = make([]string, len(files))
-	c.reducingQueue = make([]string, len(files))
-	c.coordinatorPhase = mapping
+	c.mapTasks = make(map[int]string, len(files))
+	c.mapTasksPending = make([]string, len(files))
+	c.reduceTasksFinishedCounter = 0
+	c.reduceTasksPendingCounter = nReduce
+	c.CoordinatorPhase = MAPPING
 	c.nReduce = nReduce
 	for i, fileName := range files {
-		c.mappingQueue[i] = fileName
+		c.mapTasks[i] = fileName
+		c.mapTasksPending[i] = fileName
+		c.nMap += 1
 	}
 	c.server()
 	return &c
