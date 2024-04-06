@@ -18,22 +18,27 @@ type KVServer struct {
 	mu sync.Mutex
 
 	// Your definitions here.
-	messages map[string]string
+	db       map[string]string
+	clerkOps map[int64]int64
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	// Your code here.
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	reply.Value = kv.messages[args.Key]
+
+	/* 	if kv.clerkOps[args.ClerkId] >= args.OpSeq {
+		return
+	} */
+	reply.Value = kv.db[args.Key]
+	// kv.clerkOps[args.ClerkId] = args.OpSeq
 }
 
 func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	kv.messages[args.Key] = args.Value
-	reply.Value = kv.messages[args.Key]
+	kv.db[args.Key] = args.Value
+	reply.Value = kv.db[args.Key]
 
 }
 
@@ -41,13 +46,14 @@ func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	kv.messages[args.Key] = kv.messages[args.Key] + args.Value
+	reply.Value = kv.db[args.Key]
+	kv.db[args.Key] += args.Value
 }
 
 func StartKVServer() *KVServer {
 	kv := new(KVServer)
 
 	// You may need initialization code here.
-	kv.messages = make(map[string]string)
+	kv.db = make(map[string]string)
 	return kv
 }

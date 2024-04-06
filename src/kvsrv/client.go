@@ -3,14 +3,15 @@ package kvsrv
 import (
 	"crypto/rand"
 	"math/big"
+	"time"
 
 	"6.5840/labrpc"
 )
 
 type Clerk struct {
-	server *labrpc.ClientEnd
-	// You will have to modify this struct.
+	server  *labrpc.ClientEnd
 	clerkId int64
+	opSeq   int64 // Added: operation sequence number for idempotency
 }
 
 func nrand() int64 {
@@ -24,7 +25,7 @@ func MakeClerk(server *labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.server = server
 	ck.clerkId = nrand()
-	// You'll have to add code here.
+	ck.opSeq = 0 // Initialize operation sequence number
 	return ck
 }
 
@@ -41,38 +42,44 @@ func MakeClerk(server *labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
 	args := GetArgs{
-		key,
+		Key:     key,
+		ClerkId: ck.clerkId,
+		OpSeq:   ck.opSeq,
 	}
-	reply := GetReply{}
-	ck.server.Call("KVServer.Get", &args, &reply)
-	return reply.Value
+	ck.opSeq++
+	for {
+		reply := GetReply{}
+		ok := ck.server.Call("KVServer.Get", &args, &reply)
+		if ok {
+			return reply.Value
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
-// shared by Put and Append.
-//
-// you can send an RPC with code like this:
-// ok := ck.server.Call("KVServer."+op, &args, &reply)
-//
-// the types of args and reply (including whether they are pointers)
-// must match the declared types of the RPC handler function's
-// arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) string {
-	// You will have to modify this function.
-
 	args := PutAppendArgs{
-		key, value,
+		Key:     key,
+		Value:   value,
+		ClerkId: ck.clerkId,
+		OpSeq:   ck.opSeq,
 	}
-	reply := PutAppendReply{}
+	ck.opSeq++
 
-	ck.server.Call("KVServer."+op, &args, &reply)
-	return reply.Value
+	for {
+		reply := PutAppendReply{}
+		ok := ck.server.Call("KVServer."+op, &args, &reply)
+		if ok {
+			return reply.Value
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {
 	ck.PutAppend(key, value, "Put")
 }
 
-// Append value to key's value and return that value
 func (ck *Clerk) Append(key string, value string) string {
 	return ck.PutAppend(key, value, "Append")
 }
