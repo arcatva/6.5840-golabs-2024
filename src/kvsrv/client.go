@@ -44,9 +44,9 @@ func (ck *Clerk) Get(key string) string {
 	args := GetArgs{
 		Key:     key,
 		ClerkId: ck.clerkId,
-		OpSeq:   ck.opSeq,
+		OpId:    nrand(),
 	}
-	ck.opSeq++
+
 	for {
 		reply := GetReply{}
 		ok := ck.server.Call("KVServer.Get", &args, &reply)
@@ -55,6 +55,7 @@ func (ck *Clerk) Get(key string) string {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+
 }
 
 func (ck *Clerk) PutAppend(key string, value string, op string) string {
@@ -62,9 +63,8 @@ func (ck *Clerk) PutAppend(key string, value string, op string) string {
 		Key:     key,
 		Value:   value,
 		ClerkId: ck.clerkId,
-		OpSeq:   ck.opSeq,
+		OpId:    nrand(),
 	}
-	ck.opSeq++
 
 	for {
 		reply := PutAppendReply{}
